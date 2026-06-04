@@ -7,6 +7,7 @@ Health check implementations — all run from the node's network perspective.
 - system_metrics : CPU, RAM, active connections via psutil
 """
 import asyncio
+import os
 import random
 import socket
 import time
@@ -23,6 +24,11 @@ from node_agent.models import CheckResult, NodeHealthReport, SystemMetrics
 
 _IMPERSONATE = ["firefox133", "firefox135", "firefox144", "safari184"]
 _executor    = ThreadPoolExecutor(max_workers=8)
+
+# Probe result cache: url → (monotonic_timestamp, CheckResult)
+# Avoids hitting pharmacy sites on every /health call — TTL is configurable.
+_probe_cache: dict[str, tuple[float, CheckResult]] = {}
+_PROBE_CACHE_TTL = int(os.getenv("PROBE_CACHE_TTL_SECONDS", "300"))
 
 # Sliding window of recent latencies (for P95 calculation)
 _recent_latencies: list[float] = []
@@ -100,12 +106,23 @@ def _sync_check_target(url: str, timeout: int = 15) -> dict:
 
 
 async def check_target(url: str, timeout: int = 15) -> CheckResult:
-    """Check target URL reachability using curl_cffi TLS impersonation."""
+    """Check target URL reachability using curl_cffi TLS impersonation.
+
+    Results are cached for PROBE_CACHE_TTL_SECONDS to avoid hammering pharmacy
+    sites on every /health call from the manager.
+    """
+    now    = time.monotonic()
+    cached = _probe_cache.get(url)
+    if cached and (now - cached[0]) < _PROBE_CACHE_TTL:
+        return cached[1]
+
     loop   = asyncio.get_running_loop()
     result = await loop.run_in_executor(_executor, _sync_check_target, url, timeout)
 
     if not result["ok"]:
-        return CheckResult(name=f"target:{url}", passed=False, detail=result.get("error"))
+        check = CheckResult(name=f"target:{url}", passed=False, detail=result.get("error"))
+        _probe_cache[url] = (time.monotonic(), check)
+        return check
 
     d          = detect(result["status_code"], result["body"], result["headers"])
     latency_ms = result["latency_ms"]
@@ -119,12 +136,14 @@ async def check_target(url: str, timeout: int = 15) -> CheckResult:
         f"http_{result['status_code']}" if result["status_code"] >= 400 else None
     )
 
-    return CheckResult(
+    check = CheckResult(
         name=f"target:{url}",
         passed=passed,
         latency_ms=round(latency_ms, 2),
         detail=detail,
     )
+    _probe_cache[url] = (time.monotonic(), check)
+    return check
 
 
 async def system_metrics() -> SystemMetrics:
