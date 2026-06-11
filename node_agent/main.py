@@ -15,10 +15,7 @@ Environment variables required:
   PUSH_INTERVAL       — seconds between metric pushes (default: 15)
 """
 import asyncio
-import base64
-import json
 import os
-import time
 from contextlib import asynccontextmanager
 
 import httpx
@@ -49,39 +46,11 @@ def _require_key(key: str = Security(_api_key_header)) -> None:
 
 # ── Metric push background task ───────────────────────────────────────────────
 
-def _jwt_exp(token: str) -> int | None:
-    """Decode JWT payload and return exp claim without verifying signature."""
-    try:
-        segment = token.split(".")[1]
-        segment += "=" * (4 - len(segment) % 4)
-        return json.loads(base64.urlsafe_b64decode(segment)).get("exp")
-    except Exception:
-        return None
-
-
 async def _push_metrics_loop() -> None:
     """Push system metrics to manager on a fixed interval (heartbeat)."""
-    global _NODE_JWT
     await asyncio.sleep(5)  # short initial delay for manager to be ready
     while True:
         try:
-            # Renew JWT proactively when less than 2 hours remain
-            exp = _jwt_exp(_NODE_JWT)
-            if exp and (exp - time.time()) < 7200:
-                try:
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        resp = await client.post(
-                            f"{_MANAGER_URL}/nodes/{_NODE_ID}/token/refresh",
-                            params={"token": _NODE_JWT},
-                        )
-                    if resp.status_code == 200:
-                        _NODE_JWT = resp.json()["token"]
-                        logger.info("jwt_renewed", node_id=_NODE_ID)
-                    else:
-                        logger.warning("jwt_renewal_failed", status=resp.status_code)
-                except Exception as e:
-                    logger.warning("jwt_renewal_error", error=str(e))
-
             metrics = await system_metrics()
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.post(
