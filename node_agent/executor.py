@@ -10,6 +10,7 @@ L1 cache integration:
   - Successful (200) GET responses are stored in L1 after execution.
 """
 import asyncio
+import os
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,6 +27,7 @@ _executor = ThreadPoolExecutor(max_workers=16)
 
 _IMPERSONATE     = ["firefox133", "firefox135", "firefox144", "safari184"]
 _REQUEST_TIMEOUT = 30  # seconds per proxied request
+_MAX_BODY_SIZE   = int(os.getenv("NODE_MAX_BODY_SIZE", "512000"))
 
 _NO_CACHE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -52,7 +54,7 @@ def _sync_execute(req: JobExecuteRequest) -> dict:
                 verify=False,
             )
         latency_ms = (time.monotonic() - start) * 1000
-        body       = resp.text[:64_000]  # cap body at 64 KB
+        body       = resp.text[:_MAX_BODY_SIZE]
 
         d = detect(resp.status_code, body, dict(resp.headers))
 
